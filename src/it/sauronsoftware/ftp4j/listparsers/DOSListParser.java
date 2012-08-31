@@ -76,7 +76,9 @@ public class DOSListParser implements FTPListParser {
 						+ ":" + minute + " " + ampm;
 				Date md;
 				try {
-					md = DATE_FORMAT.parse(mdString);
+					synchronized (DATE_FORMAT) {
+						md = DATE_FORMAT.parse(mdString);
+					}
 				} catch (ParseException e) {
 					throw new FTPListParseException();
 				}

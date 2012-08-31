@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.ArrayList;
 
@@ -33,9 +32,12 @@ import java.util.ArrayList;
  * This one connects a remote ftp host via a HTTP 1.1 proxy which allows
  * tunneling through the HTTP CONNECT method.
  * 
+ * The connector's default value for the
+ * <em>useSuggestedAddressForDataConnections</em> flag is <em>false</em>.
+ * 
  * @author Carlo Pelliccia
  */
-public class HTTPTunnelConnector implements FTPConnector {
+public class HTTPTunnelConnector extends FTPConnector {
 
 	/**
 	 * The proxy host name.
@@ -89,7 +91,7 @@ public class HTTPTunnelConnector implements FTPConnector {
 		this(proxyHost, proxyPort, null, null);
 	}
 
-	private Socket connect(String host, int port, boolean forDataTransfer) throws IOException {
+	private Socket httpConnect(String host, int port, boolean forDataTransfer) throws IOException {
 		// The CRLF sequence.
 		byte[] CRLF = "\r\n".getBytes("UTF-8");
 		// The connect command line.
@@ -104,12 +106,9 @@ public class HTTPTunnelConnector implements FTPConnector {
 		// FTPConnection routine.
 		try {
 			if (forDataTransfer) {
-				socket = new Socket();
-				socket.setReceiveBufferSize(512 * 1024);
-				socket.setSendBufferSize(512 * 1024);
-				socket.connect(new InetSocketAddress(proxyHost, proxyPort));
+				socket = tcpConnectForDataTransferChannel(proxyHost, proxyPort);
 			} else {
-				socket = new Socket(proxyHost, proxyPort);
+				socket = tcpConnectForCommunicationChannel(proxyHost, proxyPort);
 			}
 			in = socket.getInputStream();
 			out = socket.getOutputStream();
@@ -126,6 +125,7 @@ public class HTTPTunnelConnector implements FTPConnector {
 				out.write(CRLF);
 			}
 			out.write(CRLF);
+			out.flush();
 			// Get the proxy response.
 			ArrayList responseLines = new ArrayList();
 			BufferedReader reader = new BufferedReader(
@@ -192,12 +192,12 @@ public class HTTPTunnelConnector implements FTPConnector {
 
 	public Socket connectForCommunicationChannel(String host, int port)
 			throws IOException {
-		return connect(host, port, false);
+		return httpConnect(host, port, false);
 	}
 
 	public Socket connectForDataTransferChannel(String host, int port)
 			throws IOException {
-		return connect(host, port, true);
+		return httpConnect(host, port, true);
 	}
 
 }

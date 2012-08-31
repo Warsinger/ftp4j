@@ -1,12 +1,57 @@
-Version TBD
+Version 1.7.2 - 2012/06/26
+
+- A bug has been fixed in the download routine, handling the "502 Command
+  REST not allowed by policy" message the right way.
+
+(Thanks to Ralf Bommersbach)
+
+
+Version 1.7.1 - 2012/04/12
+
+- The FTPConnector has now a setUseSuggestedAddressForDataConnections()
+  method that can be used to determinate if the connector should trust
+  the address returned by the server in the response of a PASV command,
+  or if it should rather connect to the same host used for the communication
+  channel. Before this release, this behavior had to be set using a
+  not so flexible system property. Althought the system property approach
+  is still supported, now every single connector can have its own default
+  behavior and the developer can change it for every single connection.
+- A bug related to the auto noop timer has been fixed.
+- Any call to SimpleDateFormat is now thread safe.
+- Enhancements in data transfer routines, which now are compatible with a
+  larger set of servers and proxies.
+
+(Thanks to Akom and Roberto Di Vincenzo)
+
+
+Version 1.7 - 2011/12/28
+
+- A change has been made in the FTP connectors architecture.
+  FTPConnector is no longer an interface: it is now an abstract class
+  implementing timeout aware connections. Timeouts for connection, read and
+  close operations can be set by the caller.
+- A connection attempt to a remote FTP server can now be aborted
+  calling the brand new abortCurrentConnectionAttempt() method in FTPClient.
+- Bugfix in the HTTPTunnelConnector.
+
+(Thanks to David Ekholm and Jose Sierra)
+
+
+Version 1.6.1 - 2011/08/26
 
 - The "502 Command REST not allowed by policy"
-  response to the "REST 0" command is no longer
-  considered an error. This extends the library
+  and "501 REST not compatible with server
+  configuration" responses to the "REST 0" command
+  are no longer as errors. This extends the library
   compatibility to a greater number of server
-  types. 
+  types.
+- Each SIZE command is now preceded by a TYPE I
+  command, extending the library compatibility.
+- Enhancements in the remote file list routine.
+- A timezone issue has been solved in UnixListParser
+  and NetWareListParser.
 
-(Thanks to Magnus Lundvall)
+(Thanks to Magnus Lundvall, Raphael de Bem, Joe Gerstung and Thomas Andres)
 
 
 Version 1.6 - 2011/01/07

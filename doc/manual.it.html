@@ -1,11 +1,11 @@
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
 <html>
 <head>
-<title>Manuale di ftp4j 1.6</title>
+<title>Manuale di ftp4j 1.7</title>
 <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
 </head>
 <body>
-<h1>Manuale di ftp4j 1.6</h1>
+<h1>Manuale di ftp4j 1.7</h1>
 <ul>
   <li><a href="#1">Requisiti</a></li>
   <li><a href="#2">Installazione</a></li>
@@ -58,7 +58,7 @@
 <pre>client.disconnect(false);</pre>
 <a name="5"></a>
 <h2>Connessione attraverso un proxy</h2>
-<p>Il client di ftp4j si connette al server attraverso un <em>connettore</em> (un oggetto che implementa l'interfaccia <em>it.sauronsoftware.ftp4j.FTPConnector</em>). Il client carica il connettore che gli &egrave; stato assegnato e gli domanda la connessione con il server. Il connettore stabilisce la connessione e ne restituisce il controllo al client (attraverso un oggetto che implementa l'interfaccia <em>it.sauronsoftware.ftp4j.FTPConnection</em>). Grazie a questo meccanismo di astrazione ftp4j &egrave; in grado di supportare la connessione attraverso diversi tipi di proxy.</p>
+<p>Il client di ftp4j si connette al server attraverso un <em>connettore</em> (un oggetto che estende la classe astratta <em>it.sauronsoftware.ftp4j.FTPConnector</em>). Il client carica il connettore che gli &egrave; stato assegnato e gli domanda la connessione con il server. Il connettore stabilisce la connessione e ne restituisce il controllo al client (attraverso un oggetto che implementa l'interfaccia <em>it.sauronsoftware.ftp4j.FTPConnection</em>). Grazie a questo meccanismo di astrazione ftp4j &egrave; in grado di supportare la connessione attraverso diversi tipi di proxy.</p>
 <p>Il connettore di un client pu&ograve; essere impostato attraverso il metodo <em>setConnector()</em>, naturalmente prima di connettere il client al server.</p>
 <pre>client.setConnector(anyConnectorYouWant);</pre>
 <p>Se nessun connettore viene impostato, il client usa quello predefinito, che &egrave; <em>DirectConnector</em> (<em>it.sauronsoftware.ftp4j.connectors.DirectConnector</em>). <em>DirectConnector</em> stabilisce una connessione TCP diretta tra il client ed il server, senza altre destinazioni o protocolli intermediari.</p>
@@ -73,7 +73,7 @@ Questo connettore si collega attraverso un proxy FTP in grado di supportare il c
   <li><em>SOCKS5Connector</em> (<em>it.sauronsoftware.ftp4j.connectors.SOCKS5Connector</em>)<br />
   Questo connettore si collega alla destinazione attraverso un proxy SOCKS 5.</li>
 </ul>
-<p>Poich&eacute; l'architettura di ftp4j &egrave; modulare, altri connettori possono essere sviluppati da chiunque, implementando l'interfaccia <em>FTPConnector</em>.</p>
+<p>Poich&eacute; l'architettura di ftp4j &egrave; modulare, altri connettori possono essere sviluppati da chiunque, estendendo la classe astratta <em>FTPConnector</em>.</p>
 <a name="6"></a>
 <h2>Connessione sicura FTPS/FTPES</h2>
 <p>La libreria ftp4j supporta le due varianti sicure di FTP denominate FTPS (FTP con TLS/SSL implicito) e FTPES (FTP su TLS/SSL esplicito).</p>
@@ -244,10 +244,15 @@ public class MyTransferListener implements FTPDataTransferListener {
 <pre>client.setPassive(false); // Server attivo</pre>
 <pre>client.setPassive(true); // Server passivo</pre>
 <p>Il valore predefinito &egrave; <em>true</em>, cio&egrave; al server viene chiesto di restare passivo in modo che sia sempre il client a connettersi.</p>
-<p>Quando il modo di trasferimento &egrave; impostato su <em>passivo</em>, la seguente propriet&agrave; di sistema pu&ograve; essere impostata:</p>
+<p>Durante la negoziazione di un trasferimento di file passivo, il server comunica al client un indirizzo IP ed un numero di porta. Il client dovrebbe usare questi dati per connettersi ed eseguire lo scambio file.
+In ambienti di produzione aziendali, tuttavia, questo comportamento richiesto dalla specifica FTP risulta spesso problematico.
+La presenza di firewall, proxy e configurazioni NAT, infatti, determinano spesso delle condizioni per cui l'indirizzo IP comunicato dal server non risulta direttamente raggiungibile partendo dal client.
+Questo &egrave; il motivo per cui molti client FTP non rispettano la specifica ed ignorano l'indirizzo IP comunicato dal server, connettendosi invece automaticamente allo stesso host con il quale hanno stabilito la linea di comunicazione principale.
+Anche la libreria ftp4j opta solitamente per questo approccio, tuttavia la caratteristica &egrave; ampiamente configurabile. Per capire cosa far&agrave; ftp4j, bisogna prendere in considerazione i seguenti elementi:</p>  
 <ul>
-  <li><p><em>ftp4j.passiveDataTransfer.useSuggestedAddress</em><br />
-  Impostare questa propriet&agrave; su &quot;true&quot;, &quot;yes&quot; o &quot;1&quot; (case insensitive) fa s&iacute; che il client usi l'indirizzo suggerito dal server nella risposta positiva ad un comando PASV. Per evitare i problemi di NAT frequentemente riportati, infatti, ftp4j preferisce non fidarsi degli indirizzi IP dichiarati dai server. Quindi la risposta ad un comando PASV viene interpretata solo per ricavare il numero di porta da usare per la connessione, mentre le informazioni circa l'indirizzo del server vengono scartate e rimpiazzate con il nome host usato per la connessione iniziale al server FTP. Usando la propriet&agrave; si forza ftp4j a fidarsi della risposta al comando PASV e di usare l'indirizzo specificato per il trasferimento dati passivo.</p></li>
+  <li>Ogni <em>FTPConnector</em> ha un suo comportamento predefinito. Quindi, in base al connettore utilizzato, ftp4j potrebbe comportarsi diversamente. A dire il vero, quasi tutti i connettori ufficiali di ftp4j ignorano l'indirizzo IP comunicato dal server e scelgono di connettersi a quello indicato dall'utente e usato per stabilire la linea di comunicazione principale. L'unico connettore ufficiale che si comporta diversamente &egrave; <em>FTPProxyConnector</em>, che per sua natura preferisce invece l'indirizzo ricevuto dal server.</li>
+  <li>Qualunque sia il comportamento predefinito del connettore, &egrave; sempre possibile sovrascriverlo globalmente usando la propriet&agrave; di sistema <em>ftp4j.passiveDataTransfer.useSuggestedAddress</em>. Impostando il valore di questa propriet&egrave; su &quot;true&quot;, &quot;yes&quot; o &quot;1&quot; si fa in modo che qualunque connettore user&agrave; sempre l'indirizzo IP specificato dal server; viceversa, usando i valori &quot;false&quot;, &quot;no&quot; o &quot;0&quot;, tutti i connettori useranno sempre e solamente il nome host originario.</li>
+  <li>Infine, qualunque sia il comportamento predefinito del connettore e qualunque sia il valore della propriet&agrave; di sistema <em>ftp4j.passiveDataTransfer.useSuggestedAddress</em>, &egrave; sempre possibile definire il comportamento da intraprendere di volta in volta. Lo si pu&ograve; fare recuperando il connettore usato dal client ed invocando il suo metodo <em>setUseSuggestedAddressForDataConnections()</em>. Questo controllo &egrave; il pi&ugrave; raffinato possibile in ftp4j, perch&eacute; permette di avere diverse istanze del medesimo connettore che si comportano diversamente.</li>
 </ul>
 <p>Quando il modo di trasferimento &egrave; impostato su <em>attivo</em>, le seguenti propriet&agrave; di sistema possono essere impostate:</p>
 <ul>

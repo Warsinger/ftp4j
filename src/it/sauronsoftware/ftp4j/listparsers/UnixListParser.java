@@ -131,14 +131,16 @@ public class UnixListParser implements FTPListParser {
 				}
 				Date md;
 				try {
-					md = DATE_FORMAT.parse(mdString.toString());
+					synchronized (DATE_FORMAT) {
+						md = DATE_FORMAT.parse(mdString.toString());
+					}
 				} catch (ParseException e) {
 					throw new FTPListParseException();
 				}
 				if (checkYear) {
 					Calendar mc = Calendar.getInstance();
 					mc.setTime(md);
-					if (mc.after(now)) {
+					if (mc.after(now) && mc.getTimeInMillis() - now.getTimeInMillis() > 24L * 60L * 60L * 1000L) {
 						mc.set(Calendar.YEAR, currentYear - 1);
 						md = mc.getTime();
 					}

@@ -24,16 +24,18 @@ import it.sauronsoftware.ftp4j.FTPIllegalReplyException;
 import it.sauronsoftware.ftp4j.FTPReply;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.Socket;
 
 /**
  * This one connects a remote host via a FTP proxy which supports the SITE or
  * the OPEN proxy method.
  * 
+ * The connector's default value for the
+ * <em>useSuggestedAddressForDataConnections</em> flag is <em>true</em>.
+ * 
  * @author Carlo Pelliccia
  */
-public class FTPProxyConnector implements FTPConnector {
+public class FTPProxyConnector extends FTPConnector {
 
 	/**
 	 * Requires the connection to the remote host through a SITE command after
@@ -88,6 +90,7 @@ public class FTPProxyConnector implements FTPConnector {
 	 */
 	public FTPProxyConnector(String proxyHost, int proxyPort, String proxyUser,
 			String proxyPass) {
+		super(true);
 		this.proxyHost = proxyHost;
 		this.proxyPort = proxyPort;
 		this.proxyUser = proxyUser;
@@ -133,7 +136,7 @@ public class FTPProxyConnector implements FTPConnector {
 
 	public Socket connectForCommunicationChannel(String host, int port)
 			throws IOException {
-		Socket socket = new Socket(proxyHost, proxyPort);
+		Socket socket = tcpConnectForCommunicationChannel(proxyHost, proxyPort);
 		FTPCommunicationChannel communication = new FTPCommunicationChannel(
 				socket, "ASCII");
 		// Welcome message.
@@ -194,11 +197,7 @@ public class FTPProxyConnector implements FTPConnector {
 
 	public Socket connectForDataTransferChannel(String host, int port)
 			throws IOException {
-		Socket socket = new Socket();
-		socket.setReceiveBufferSize(512 * 1024);
-		socket.setSendBufferSize(512 * 1024);
-		socket.connect(new InetSocketAddress(host, port));
-		return socket;
+		return tcpConnectForDataTransferChannel(host, port);
 	}
 
 }

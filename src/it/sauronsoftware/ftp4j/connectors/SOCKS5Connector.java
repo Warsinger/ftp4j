@@ -23,15 +23,17 @@ import it.sauronsoftware.ftp4j.FTPConnector;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
 import java.net.Socket;
 
 /**
  * This one connects a remote ftp host through a SOCKS5 proxy server.
  * 
+ * The connector's default value for the
+ * <em>useSuggestedAddressForDataConnections</em> flag is <em>false</em>.
+ * 
  * @author Carlo Pelliccia
  */
-public class SOCKS5Connector implements FTPConnector {
+public class SOCKS5Connector extends FTPConnector {
 
 	/**
 	 * The socks5 proxy host name.
@@ -86,7 +88,7 @@ public class SOCKS5Connector implements FTPConnector {
 		this(socks5host, socks5port, null, null);
 	}
 
-	private Socket connect(String host, int port, boolean forDataTransfer) throws IOException {
+	private Socket socksConnect(String host, int port, boolean forDataTransfer) throws IOException {
 		// Authentication flag
 		boolean authentication = socks5user != null && socks5pass != null;
 		// A connection status flag.
@@ -98,12 +100,9 @@ public class SOCKS5Connector implements FTPConnector {
 		// FTPConnection routine.
 		try {
 			if (forDataTransfer) {
-				socket = new Socket();
-				socket.setReceiveBufferSize(512 * 1024);
-				socket.setSendBufferSize(512 * 1024);
-				socket.connect(new InetSocketAddress(socks5host, socks5port));
+				socket = tcpConnectForDataTransferChannel(socks5host, socks5port);
 			} else {
-				socket = new Socket(socks5host, socks5port);
+				socket = tcpConnectForCommunicationChannel(socks5host, socks5port);
 			}
 			in = socket.getInputStream();
 			out = socket.getOutputStream();
@@ -286,12 +285,12 @@ public class SOCKS5Connector implements FTPConnector {
 
 	public Socket connectForCommunicationChannel(String host, int port)
 			throws IOException {
-		return connect(host, port, false);
+		return socksConnect(host, port, false);
 	}
 
 	public Socket connectForDataTransferChannel(String host, int port)
 			throws IOException {
-		return connect(host, port, true);
+		return socksConnect(host, port, true);
 	}
 
 }

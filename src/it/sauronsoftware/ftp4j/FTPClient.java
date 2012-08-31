@@ -70,7 +70,7 @@ import javax.net.ssl.SSLSocketFactory;
  * server.
  * 
  * @author Carlo Pelliccia
- * @version 1.5
+ * @version 1.7.1
  */
 public class FTPClient {
 
@@ -346,9 +346,14 @@ public class FTPClient {
 
 	/**
 	 * This flag turns to true when any data transfer stream is closed due to an
-	 * abort suggestion.
+	 * abort request.
 	 */
 	private boolean aborted = false;
+
+	/**
+	 * This flags tells if the reply to an ABOR command waits to be consumed.
+	 */
+	private boolean consumeAborCommandReply = false;
 
 	/**
 	 * Lock object used for synchronization.
@@ -1079,6 +1084,17 @@ public class FTPClient {
 	}
 
 	/**
+	 * Aborts the current connection attempt. It can be called by a secondary
+	 * thread while the client is blocked in a <em>connect()</em> call. The
+	 * connect() method will exit with an {@link IOException}.
+	 * 
+	 * @since 1.7
+	 */
+	public void abortCurrentConnectionAttempt() {
+		connector.abortConnectForCommunicationChannel();
+	}
+
+	/**
 	 * This method disconnects from the remote server, optionally performing the
 	 * QUIT procedure.
 	 * 
@@ -1137,8 +1153,10 @@ public class FTPClient {
 	 */
 	public void abruptlyCloseCommunication() {
 		// Close the communication.
-		communication.close();
-		communication = null;
+		if (communication != null) {
+			communication.close();
+			communication = null;
+		}
 		// Reset the connection flag.
 		connected = false;
 		// Stops the auto noop timer.
@@ -1426,14 +1444,18 @@ public class FTPClient {
 			if (!authenticated) {
 				throw new IllegalStateException("Client not authenticated");
 			}
-			// Send the noop.
-			communication.sendFTPCommand("NOOP");
-			FTPReply r = communication.readFTPReply();
-			if (!r.isSuccessCode()) {
-				throw new FTPException(r);
+			// Safe code
+			try {
+				// Send the noop.
+				communication.sendFTPCommand("NOOP");
+				FTPReply r = communication.readFTPReply();
+				if (!r.isSuccessCode()) {
+					throw new FTPException(r);
+				}
+			} finally {
+				// Resets auto noop timer.
+				touchAutoNoopTimer();
 			}
-			// Resets auto noop timer.
-			touchAutoNoopTimer();
 		}
 	}
 
@@ -1725,9 +1747,16 @@ public class FTPClient {
 			if (!authenticated) {
 				throw new IllegalStateException("Client not authenticated");
 			}
+			// Sends the TYPE I command.
+			communication.sendFTPCommand("TYPE I");
+			FTPReply r = communication.readFTPReply();
+			touchAutoNoopTimer();
+			if (!r.isSuccessCode()) {
+				throw new FTPException(r);
+			}
 			// Sends the SIZE command.
 			communication.sendFTPCommand("SIZE " + path);
-			FTPReply r = communication.readFTPReply();
+			r = communication.readFTPReply();
 			touchAutoNoopTimer();
 			if (!r.isSuccessCode()) {
 				throw new FTPException(r);
@@ -2061,75 +2090,88 @@ public class FTPClient {
 			if (fileSpec != null && fileSpec.length() > 0) {
 				command += " " + fileSpec;
 			}
+			// Prepares the lines array.
+			ArrayList lines = new ArrayList();
+			// Local abort state.
+			boolean wasAborted = false;
 			// Sends the command.
 			communication.sendFTPCommand(command);
-			Socket dtConnection;
 			try {
+				Socket dtConnection;
 				try {
 					dtConnection = provider.openDataTransferConnection();
 				} finally {
-					r = communication.readFTPReply();
-					touchAutoNoopTimer();
-					if (r.getCode() != 150 && r.getCode() != 125) {
-						throw new FTPException(r);
-					}
+					provider.dispose();
 				}
-			} finally {
-				provider.dispose();
-			}
-			// Change the operation status.
-			synchronized (abortLock) {
-				ongoingDataTransfer = true;
-				aborted = false;
-			}
-			// Fetch the list from the data transfer connection.
-			ArrayList lines = new ArrayList();
-			NVTASCIIReader dataReader = null;
-			try {
-				// Opens the data transfer connection.
-				dataTransferInputStream = dtConnection.getInputStream();
-				// MODE Z enabled?
-				if (modezEnabled) {
-					dataTransferInputStream = new InflaterInputStream(dataTransferInputStream);
-				}
-				// Let's do it!
-				dataReader = new NVTASCIIReader(dataTransferInputStream, mlsdCommand ? "UTF-8" : pickCharset());
-				String line;
-				while ((line = dataReader.readLine()) != null) {
-					if (line.length() > 0) {
-						lines.add(line);
-					}
-				}
-			} catch (IOException e) {
+				// Change the operation status.
 				synchronized (abortLock) {
-					if (aborted) {
-						throw new FTPAbortedException();
-					} else {
-						throw new FTPDataTransferException(
-								"I/O error in data transfer", e);
-					}
+					ongoingDataTransfer = true;
+					aborted = false;
+					consumeAborCommandReply = false;
 				}
-			} finally {
-				if (dataReader != null) {
+				// Fetch the list from the data transfer connection.
+				NVTASCIIReader dataReader = null;
+				try {
+					// Opens the data transfer connection.
+					dataTransferInputStream = dtConnection.getInputStream();
+					// MODE Z enabled?
+					if (modezEnabled) {
+						dataTransferInputStream = new InflaterInputStream(dataTransferInputStream);
+					}
+					// Let's do it!
+					dataReader = new NVTASCIIReader(dataTransferInputStream, mlsdCommand ? "UTF-8" : pickCharset());
+					String line;
+					while ((line = dataReader.readLine()) != null) {
+						if (line.length() > 0) {
+							lines.add(line);
+						}
+					}
+				} catch (IOException e) {
+					synchronized (abortLock) {
+						if (aborted) {
+							throw new FTPAbortedException();
+						} else {
+							throw new FTPDataTransferException(
+									"I/O error in data transfer", e);
+						}
+					}
+				} finally {
+					if (dataReader != null) {
+						try {
+							dataReader.close();
+						} catch (Throwable t) {
+							;
+						}
+					}
 					try {
-						dataReader.close();
+						dtConnection.close();
 					} catch (Throwable t) {
 						;
 					}
+					// Set to null the instance-level input stream.
+					dataTransferInputStream = null;
+					// Change the operation status.
+					synchronized (abortLock) {
+						wasAborted = aborted;
+						ongoingDataTransfer = false;
+						aborted = false;
+					}
 				}
-				try {
-					dtConnection.close();
-				} catch (Throwable t) {
-					;
+			} finally {
+				r = communication.readFTPReply();
+				touchAutoNoopTimer();
+				if (r.getCode() != 150 && r.getCode() != 125) {
+					throw new FTPException(r);
 				}
-				// Consume the result reply of the transfer.
-				communication.readFTPReply();
-				// Set to null the instance-level input stream.
-				dataTransferInputStream = null;
-				// Change the operation status.
-				synchronized (abortLock) {
-					ongoingDataTransfer = false;
-					aborted = false;
+				// Consumes the result reply of the transfer.
+				r = communication.readFTPReply();
+				if (!wasAborted && r.getCode() != 226) {
+					throw new FTPException(r);
+				}
+				// ABOR command response (if needed).
+				if (consumeAborCommandReply) {
+					communication.readFTPReply();
+					consumeAborCommandReply = false;
 				}
 			}
 			// Build an array of lines.
@@ -2145,9 +2187,19 @@ public class FTPClient {
 				MLSDListParser parser = new MLSDListParser();
 				ret = parser.parse(list);
 			} else {
-				// Searches for the appropriate parser.
-				if (parser == null) {
-					// Try to parse the list with every parser available.
+				// Is there any already successful parser?
+				if (parser != null) {
+					// Yes, let's try with it.
+					try {
+						ret = parser.parse(list);
+					} catch (FTPListParseException e) {
+						// That parser doesn't work anymore.
+						parser = null;
+					}
+				}
+				// Is there an available result?
+				if (ret == null) {
+					// Try to parse the list with every available parser.
 					for (Iterator i = listParsers.iterator(); i.hasNext();) {
 						FTPListParser aux = (FTPListParser) i.next();
 						try {
@@ -2162,8 +2214,6 @@ public class FTPClient {
 							continue;
 						}
 					}
-				} else {
-					ret = parser.parse(list);
 				}
 			}
 			if (ret == null) {
@@ -2277,77 +2327,89 @@ public class FTPClient {
 			if (!r.isSuccessCode()) {
 				throw new FTPException(r);
 			}
+			// Prepares the lines array.
+			ArrayList lines = new ArrayList();
+			// Local abort state.
+			boolean wasAborted = false;
 			// Prepares the connection for the data transfer.
 			FTPDataTransferConnectionProvider provider = openDataTransferChannel();
 			// Send the NLST command.
 			communication.sendFTPCommand("NLST");
-			Socket dtConnection;
 			try {
+				Socket dtConnection;
 				try {
 					dtConnection = provider.openDataTransferConnection();
 				} finally {
-					r = communication.readFTPReply();
-					if (r.getCode() != 150 && r.getCode() != 125) {
-						throw new FTPException(r);
-					}
+					provider.dispose();
 				}
-			} finally {
-				provider.dispose();
-			}
-			// Change the operation status.
-			synchronized (abortLock) {
-				ongoingDataTransfer = true;
-				aborted = false;
-			}
-			// Fetch the list from the data transfer connection.
-			ArrayList lines = new ArrayList();
-			NVTASCIIReader dataReader = null;
-			try {
-				// Opens the data transfer connection.
-				dataTransferInputStream = dtConnection.getInputStream();
-				// MODE Z enabled?
-				if (modezEnabled) {
-					dataTransferInputStream = new InflaterInputStream(dataTransferInputStream);
-				}
-				// Let's do it!
-				dataReader = new NVTASCIIReader(dataTransferInputStream,
-						pickCharset());
-				String line;
-				while ((line = dataReader.readLine()) != null) {
-					if (line.length() > 0) {
-						lines.add(line);
-					}
-				}
-			} catch (IOException e) {
+				// Change the operation status.
 				synchronized (abortLock) {
-					if (aborted) {
-						throw new FTPAbortedException();
-					} else {
-						throw new FTPDataTransferException(
-								"I/O error in data transfer", e);
-					}
+					ongoingDataTransfer = true;
+					aborted = false;
+					consumeAborCommandReply = false;
 				}
-			} finally {
-				if (dataReader != null) {
+				// Fetch the list from the data transfer connection.
+				NVTASCIIReader dataReader = null;
+				try {
+					// Opens the data transfer connection.
+					dataTransferInputStream = dtConnection.getInputStream();
+					// MODE Z enabled?
+					if (modezEnabled) {
+						dataTransferInputStream = new InflaterInputStream(dataTransferInputStream);
+					}
+					// Let's do it!
+					dataReader = new NVTASCIIReader(dataTransferInputStream, pickCharset());
+					String line;
+					while ((line = dataReader.readLine()) != null) {
+						if (line.length() > 0) {
+							lines.add(line);
+						}
+					}
+				} catch (IOException e) {
+					synchronized (abortLock) {
+						if (aborted) {
+							throw new FTPAbortedException();
+						} else {
+							throw new FTPDataTransferException(
+									"I/O error in data transfer", e);
+						}
+					}
+				} finally {
+					if (dataReader != null) {
+						try {
+							dataReader.close();
+						} catch (Throwable t) {
+							;
+						}
+					}
 					try {
-						dataReader.close();
+						dtConnection.close();
 					} catch (Throwable t) {
 						;
 					}
+					// Set to null the instance-level input stream.
+					dataTransferInputStream = null;
+					// Change the operation status.
+					synchronized (abortLock) {
+						wasAborted = aborted;
+						ongoingDataTransfer = false;
+						aborted = false;
+					}
 				}
-				try {
-					dtConnection.close();
-				} catch (Throwable t) {
-					;
+			} finally {
+				r = communication.readFTPReply();
+				if (r.getCode() != 150 && r.getCode() != 125) {
+					throw new FTPException(r);
 				}
-				// Consume the result reply of the transfer.
-				communication.readFTPReply();
-				// Set to null the instance-level input stream.
-				dataTransferInputStream = null;
-				// Change the operation status.
-				synchronized (abortLock) {
-					ongoingDataTransfer = false;
-					aborted = false;
+				// Consumes the result reply of the transfer.
+				r = communication.readFTPReply();
+				if (!wasAborted && r.getCode() != 226) {
+					throw new FTPException(r);
+				}
+				// ABOR command response (if needed).
+				if (consumeAborCommandReply) {
+					communication.readFTPReply();
+					consumeAborCommandReply = false;
 				}
 			}
 			// Build an array.
@@ -2620,7 +2682,7 @@ public class FTPClient {
 					communication.sendFTPCommand("REST " + restartAt);
 					r = communication.readFTPReply();
 					touchAutoNoopTimer();
-					if (r.getCode() != 350 && (r.getCode() != 502 || restartAt > 0)) {
+					if (r.getCode() != 350 && ((r.getCode() != 501 && r.getCode() != 502) || restartAt > 0)) {
 						throw new FTPException(r);
 					}
 					done = true;
@@ -2630,108 +2692,119 @@ public class FTPClient {
 					}
 				}
 			}
+			// Local abort state.
+			boolean wasAborted = false;
 			// Send the STOR command.
 			communication.sendFTPCommand("STOR " + fileName);
-			Socket dtConnection;
 			try {
+				Socket dtConnection;
 				try {
 					dtConnection = provider.openDataTransferConnection();
 				} finally {
-					r = communication.readFTPReply();
-					touchAutoNoopTimer();
-					if (r.getCode() != 150 && r.getCode() != 125) {
-						throw new FTPException(r);
-					}
+					provider.dispose();
 				}
-			} finally {
-				provider.dispose();
-			}
-			// Change the operation status.
-			synchronized (abortLock) {
-				ongoingDataTransfer = true;
-				aborted = false;
-			}
-			// Upload the stream.
-			long done = 0;
-			try {
-				// Skips.
-				inputStream.skip(streamOffset);
-				// Opens the data transfer connection.
-				dataTransferOutputStream = dtConnection.getOutputStream();
-				// MODE Z enabled?
-				if (modezEnabled) {
-					dataTransferOutputStream = new DeflaterOutputStream(dataTransferOutputStream);
-				}
-				// Listeners.
-				if (listener != null) {
-					listener.started();
-				}
-				// Let's do it!
-				if (tp == TYPE_TEXTUAL) {
-					Reader reader = new InputStreamReader(inputStream);
-					Writer writer = new OutputStreamWriter(
-							dataTransferOutputStream, pickCharset());
-					char[] buffer = new char[SEND_AND_RECEIVE_BUFFER_SIZE];
-					int l;
-					while ((l = reader.read(buffer)) != -1) {
-						writer.write(buffer, 0, l);
-						writer.flush();
-						done += l;
-						if (listener != null) {
-							listener.transferred(l);
-						}
-					}
-				} else if (tp == TYPE_BINARY) {
-					byte[] buffer = new byte[SEND_AND_RECEIVE_BUFFER_SIZE];
-					int l;
-					while ((l = inputStream.read(buffer)) != -1) {
-						dataTransferOutputStream.write(buffer, 0, l);
-						dataTransferOutputStream.flush();
-						done += l;
-						if (listener != null) {
-							listener.transferred(l);
-						}
-					}
-				}
-			} catch (IOException e) {
+				// Change the operation status.
 				synchronized (abortLock) {
-					if (aborted) {
-						if (listener != null) {
-							listener.aborted();
-						}
-						throw new FTPAbortedException();
-					} else {
-						if (listener != null) {
-							listener.failed();
-						}
-						throw new FTPDataTransferException(
-								"I/O error in data transfer", e);
-					}
+					ongoingDataTransfer = true;
+					aborted = false;
+					consumeAborCommandReply = false;
 				}
-			} finally {
-				// Closing stream and data connection.
-				if (dataTransferOutputStream != null) {
+				// Upload the stream.
+				try {
+					// Skips.
+					inputStream.skip(streamOffset);
+					// Opens the data transfer connection.
+					dataTransferOutputStream = dtConnection.getOutputStream();
+					// MODE Z enabled?
+					if (modezEnabled) {
+						dataTransferOutputStream = new DeflaterOutputStream(dataTransferOutputStream);
+					}
+					// Listeners.
+					if (listener != null) {
+						listener.started();
+					}
+					// Let's do it!
+					if (tp == TYPE_TEXTUAL) {
+						Reader reader = new InputStreamReader(inputStream);
+						Writer writer = new OutputStreamWriter(
+								dataTransferOutputStream, pickCharset());
+						char[] buffer = new char[SEND_AND_RECEIVE_BUFFER_SIZE];
+						int l;
+						while ((l = reader.read(buffer)) != -1) {
+							writer.write(buffer, 0, l);
+							writer.flush();
+							if (listener != null) {
+								listener.transferred(l);
+							}
+						}
+					} else if (tp == TYPE_BINARY) {
+						byte[] buffer = new byte[SEND_AND_RECEIVE_BUFFER_SIZE];
+						int l;
+						while ((l = inputStream.read(buffer)) != -1) {
+							dataTransferOutputStream.write(buffer, 0, l);
+							dataTransferOutputStream.flush();
+							if (listener != null) {
+								listener.transferred(l);
+							}
+						}
+					}
+				} catch (IOException e) {
+					synchronized (abortLock) {
+						if (aborted) {
+							if (listener != null) {
+								listener.aborted();
+							}
+							throw new FTPAbortedException();
+						} else {
+							if (listener != null) {
+								listener.failed();
+							}
+							throw new FTPDataTransferException(
+									"I/O error in data transfer", e);
+						}
+					}
+				} finally {
+					// Closing stream and data connection.
+					if (dataTransferOutputStream != null) {
+						try {
+							dataTransferOutputStream.close();
+						} catch (Throwable t) {
+							;
+						}
+					}
 					try {
-						dataTransferOutputStream.close();
+						dtConnection.close();
 					} catch (Throwable t) {
 						;
 					}
+					// Set to null the instance-level input stream.
+					dataTransferOutputStream = null;
+					// Change the operation status.
+					synchronized (abortLock) {
+						wasAborted = aborted;
+						ongoingDataTransfer = false;
+						aborted = false;
+					}
 				}
-				try {
-					dtConnection.close();
-				} catch (Throwable t) {
-					;
+			} finally {
+				// Data transfer command reply.
+				r = communication.readFTPReply();
+				touchAutoNoopTimer();
+				if (r.getCode() != 150 && r.getCode() != 125) {
+					throw new FTPException(r);
 				}
-				// Set to null the instance-level input stream.
-				dataTransferOutputStream = null;
-				// Consume the result reply of the transfer.
-				communication.readFTPReply();
-				// Change the operation status.
-				synchronized (abortLock) {
-					ongoingDataTransfer = false;
-					aborted = false;
+				// Consumes the result reply of the transfer.
+				r = communication.readFTPReply();
+				if (!wasAborted && r.getCode() != 226) {
+					throw new FTPException(r);
+				}
+				// ABOR command response (if needed).
+				if (consumeAborCommandReply) {
+					communication.readFTPReply();
+					consumeAborCommandReply = false;
 				}
 			}
+			// Listener notification.
 			if (listener != null) {
 				listener.completed();
 			}
@@ -2910,110 +2983,120 @@ public class FTPClient {
 			if (!r.isSuccessCode()) {
 				throw new FTPException(r);
 			}
+			// Local abort state.
+			boolean wasAborted = false;
 			// Prepares the connection for the data transfer.
 			FTPDataTransferConnectionProvider provider = openDataTransferChannel();
 			// Send the STOR command.
 			communication.sendFTPCommand("APPE " + fileName);
-			Socket dtConnection;
 			try {
+				Socket dtConnection;
 				try {
 					dtConnection = provider.openDataTransferConnection();
 				} finally {
-					r = communication.readFTPReply();
-					touchAutoNoopTimer();
-					if (r.getCode() != 150 && r.getCode() != 125) {
-						throw new FTPException(r);
-					}
+					provider.dispose();
 				}
-			} finally {
-				provider.dispose();
-			}
-			// Change the operation status.
-			synchronized (abortLock) {
-				ongoingDataTransfer = true;
-				aborted = false;
-			}
-			// Upload the stream.
-			long done = 0;
-			try {
-				// Skips.
-				inputStream.skip(streamOffset);
-				// Opens the data transfer connection.
-				dataTransferOutputStream = dtConnection.getOutputStream();
-				// MODE Z enabled?
-				if (modezEnabled) {
-					dataTransferOutputStream = new DeflaterOutputStream(dataTransferOutputStream);
-				}
-				// Listeners.
-				if (listener != null) {
-					listener.started();
-				}
-				// Let's do it!
-				if (tp == TYPE_TEXTUAL) {
-					Reader reader = new InputStreamReader(inputStream);
-					Writer writer = new OutputStreamWriter(
-							dataTransferOutputStream, pickCharset());
-					char[] buffer = new char[SEND_AND_RECEIVE_BUFFER_SIZE];
-					int l;
-					while ((l = reader.read(buffer)) != -1) {
-						writer.write(buffer, 0, l);
-						writer.flush();
-						done += l;
-						if (listener != null) {
-							listener.transferred(l);
-						}
-					}
-				} else if (tp == TYPE_BINARY) {
-					byte[] buffer = new byte[SEND_AND_RECEIVE_BUFFER_SIZE];
-					int l;
-					while ((l = inputStream.read(buffer)) != -1) {
-						dataTransferOutputStream.write(buffer, 0, l);
-						dataTransferOutputStream.flush();
-						done += l;
-						if (listener != null) {
-							listener.transferred(l);
-						}
-					}
-				}
-			} catch (IOException e) {
+				// Change the operation status.
 				synchronized (abortLock) {
-					if (aborted) {
-						if (listener != null) {
-							listener.aborted();
-						}
-						throw new FTPAbortedException();
-					} else {
-						if (listener != null) {
-							listener.failed();
-						}
-						throw new FTPDataTransferException(
-								"I/O error in data transfer", e);
-					}
+					ongoingDataTransfer = true;
+					aborted = false;
+					consumeAborCommandReply = false;
 				}
-			} finally {
-				// Closing stream and data connection.
-				if (dataTransferOutputStream != null) {
+				// Upload the stream.
+				try {
+					// Skips.
+					inputStream.skip(streamOffset);
+					// Opens the data transfer connection.
+					dataTransferOutputStream = dtConnection.getOutputStream();
+					// MODE Z enabled?
+					if (modezEnabled) {
+						dataTransferOutputStream = new DeflaterOutputStream(dataTransferOutputStream);
+					}
+					// Listeners.
+					if (listener != null) {
+						listener.started();
+					}
+					// Let's do it!
+					if (tp == TYPE_TEXTUAL) {
+						Reader reader = new InputStreamReader(inputStream);
+						Writer writer = new OutputStreamWriter(
+								dataTransferOutputStream, pickCharset());
+						char[] buffer = new char[SEND_AND_RECEIVE_BUFFER_SIZE];
+						int l;
+						while ((l = reader.read(buffer)) != -1) {
+							writer.write(buffer, 0, l);
+							writer.flush();
+							if (listener != null) {
+								listener.transferred(l);
+							}
+						}
+					} else if (tp == TYPE_BINARY) {
+						byte[] buffer = new byte[SEND_AND_RECEIVE_BUFFER_SIZE];
+						int l;
+						while ((l = inputStream.read(buffer)) != -1) {
+							dataTransferOutputStream.write(buffer, 0, l);
+							dataTransferOutputStream.flush();
+							if (listener != null) {
+								listener.transferred(l);
+							}
+						}
+					}
+				} catch (IOException e) {
+					synchronized (abortLock) {
+						if (aborted) {
+							if (listener != null) {
+								listener.aborted();
+							}
+							throw new FTPAbortedException();
+						} else {
+							if (listener != null) {
+								listener.failed();
+							}
+							throw new FTPDataTransferException(
+									"I/O error in data transfer", e);
+						}
+					}
+				} finally {
+					// Closing stream and data connection.
+					if (dataTransferOutputStream != null) {
+						try {
+							dataTransferOutputStream.close();
+						} catch (Throwable t) {
+							;
+						}
+					}
 					try {
-						dataTransferOutputStream.close();
+						dtConnection.close();
 					} catch (Throwable t) {
 						;
 					}
+					// Set to null the instance-level input stream.
+					dataTransferOutputStream = null;
+					// Change the operation status.
+					synchronized (abortLock) {
+						wasAborted = aborted;
+						ongoingDataTransfer = false;
+						aborted = false;
+					}
 				}
-				try {
-					dtConnection.close();
-				} catch (Throwable t) {
-					;
+			} finally {
+				r = communication.readFTPReply();
+				touchAutoNoopTimer();
+				if (r.getCode() != 150 && r.getCode() != 125) {
+					throw new FTPException(r);
 				}
-				// Set to null the instance-level input stream.
-				dataTransferOutputStream = null;
-				// Consume the result reply of the transfer.
-				communication.readFTPReply();
-				// Change the operation status.
-				synchronized (abortLock) {
-					ongoingDataTransfer = false;
-					aborted = false;
+				// Consumes the result reply of the transfer.
+				r = communication.readFTPReply();
+				if (!wasAborted && r.getCode() != 226) {
+					throw new FTPException(r);
+				}
+				// ABOR command response (if needed).
+				if (consumeAborCommandReply) {
+					communication.readFTPReply();
+					consumeAborCommandReply = false;
 				}
 			}
+			// Notifies the listener.
 			if (listener != null) {
 				listener.completed();
 			}
@@ -3287,7 +3370,7 @@ public class FTPClient {
 					communication.sendFTPCommand("REST " + restartAt);
 					r = communication.readFTPReply();
 					touchAutoNoopTimer();
-					if (r.getCode() != 350 && (r.getCode() != 502 || restartAt > 0)) {
+					if (r.getCode() != 350 && ((r.getCode() != 501 && r.getCode() != 502) || restartAt > 0)) {
 						throw new FTPException(r);
 					}
 					done = true;
@@ -3297,103 +3380,116 @@ public class FTPClient {
 					}
 				}
 			}
+			// Local abort state.
+			boolean wasAborted = false;
 			// Send the RETR command.
 			communication.sendFTPCommand("RETR " + fileName);
-			Socket dtConnection;
 			try {
+				Socket dtConnection;
 				try {
 					dtConnection = provider.openDataTransferConnection();
 				} finally {
-					r = communication.readFTPReply();
-					touchAutoNoopTimer();
-					if (r.getCode() != 150 && r.getCode() != 125) {
-						throw new FTPException(r);
-					}
+					provider.dispose();
 				}
-			} finally {
-				provider.dispose();
-			}
-			// Change the operation status.
-			synchronized (abortLock) {
-				ongoingDataTransfer = true;
-				aborted = false;
-			}
-			// Download the stream.
-			try {
-				// Opens the data transfer connection.
-				dataTransferInputStream = dtConnection.getInputStream();
-				// MODE Z enabled?
-				if (modezEnabled) {
-					dataTransferInputStream = new InflaterInputStream(dataTransferInputStream);
-				}
-				// Listeners.
-				if (listener != null) {
-					listener.started();
-				}
-				// Let's do it!
-				if (tp == TYPE_TEXTUAL) {
-					Reader reader = new InputStreamReader(
-							dataTransferInputStream, pickCharset());
-					Writer writer = new OutputStreamWriter(outputStream);
-					char[] buffer = new char[SEND_AND_RECEIVE_BUFFER_SIZE];
-					int l;
-					while ((l = reader.read(buffer, 0, buffer.length)) != -1) {
-						writer.write(buffer, 0, l);
-						writer.flush();
-						if (listener != null) {
-							listener.transferred(l);
-						}
-					}
-				} else if (tp == TYPE_BINARY) {
-					byte[] buffer = new byte[SEND_AND_RECEIVE_BUFFER_SIZE];
-					int l;
-					while ((l = dataTransferInputStream.read(buffer, 0,
-							buffer.length)) != -1) {
-						outputStream.write(buffer, 0, l);
-						if (listener != null) {
-							listener.transferred(l);
-						}
-					}
-				}
-			} catch (IOException e) {
+				// Change the operation status.
 				synchronized (abortLock) {
-					if (aborted) {
-						if (listener != null) {
-							listener.aborted();
-						}
-						throw new FTPAbortedException();
-					} else {
-						if (listener != null) {
-							listener.failed();
-						}
-						throw new FTPDataTransferException(
-								"I/O error in data transfer", e);
-					}
+					ongoingDataTransfer = true;
+					aborted = false;
+					consumeAborCommandReply = false;
 				}
-			} finally {
-				// Closing stream and data connection.
-				if (dataTransferInputStream != null) {
+				// Download the stream.
+				try {
+					// Opens the data transfer connection.
+					dataTransferInputStream = dtConnection.getInputStream();
+					// MODE Z enabled?
+					if (modezEnabled) {
+						dataTransferInputStream = new InflaterInputStream(dataTransferInputStream);
+					}
+					// Listeners.
+					if (listener != null) {
+						listener.started();
+					}
+					// Let's do it!
+					if (tp == TYPE_TEXTUAL) {
+						Reader reader = new InputStreamReader(
+								dataTransferInputStream, pickCharset());
+						Writer writer = new OutputStreamWriter(outputStream);
+						char[] buffer = new char[SEND_AND_RECEIVE_BUFFER_SIZE];
+						int l;
+						while ((l = reader.read(buffer, 0, buffer.length)) != -1) {
+							writer.write(buffer, 0, l);
+							writer.flush();
+							if (listener != null) {
+								listener.transferred(l);
+							}
+						}
+					} else if (tp == TYPE_BINARY) {
+						byte[] buffer = new byte[SEND_AND_RECEIVE_BUFFER_SIZE];
+						int l;
+						while ((l = dataTransferInputStream.read(buffer, 0,
+								buffer.length)) != -1) {
+							outputStream.write(buffer, 0, l);
+							if (listener != null) {
+								listener.transferred(l);
+							}
+						}
+					}
+				} catch (IOException e) {
+					synchronized (abortLock) {
+						if (aborted) {
+							if (listener != null) {
+								listener.aborted();
+							}
+							throw new FTPAbortedException();
+						} else {
+							if (listener != null) {
+								listener.failed();
+							}
+							throw new FTPDataTransferException(
+									"I/O error in data transfer", e);
+						}
+					}
+				} finally {
+					// Closing stream and data connection.
+					if (dataTransferInputStream != null) {
+						try {
+							dataTransferInputStream.close();
+						} catch (Throwable t) {
+							;
+						}
+					}
 					try {
-						dataTransferInputStream.close();
+						dtConnection.close();
 					} catch (Throwable t) {
 						;
 					}
+					// Set to null the instance-level input stream.
+					dataTransferInputStream = null;
+					// Change the operation status.
+					synchronized (abortLock) {
+						wasAborted = aborted;
+						ongoingDataTransfer = false;
+						aborted = false;
+					}
 				}
-				try {
-					dtConnection.close();
-				} catch (Throwable t) {
-					;
+			} finally {
+				r = communication.readFTPReply();
+				touchAutoNoopTimer();
+				if (r.getCode() != 150 && r.getCode() != 125) {
+					throw new FTPException(r);
 				}
-				// Set to null the instance-level input stream.
-				dataTransferInputStream = null;
-				// Consume the result reply of the transfer.
-				communication.readFTPReply();
-				// Change the operation status.
-				synchronized (abortLock) {
-					ongoingDataTransfer = false;
-					aborted = false;
+				// Consumes the result reply of the transfer.
+				r = communication.readFTPReply();
+				if (!wasAborted && r.getCode() != 226) {
+					throw new FTPException(r);
+				}
+				// ABOR command response (if needed).
+				if (consumeAborCommandReply) {
+					communication.readFTPReply();
+					consumeAborCommandReply = false;
 				}
 			}
+			// Notifies the listener.
 			if (listener != null) {
 				listener.completed();
 			}
@@ -3469,8 +3565,7 @@ public class FTPClient {
 				Socket socket = super.openDataTransferConnection();
 				if (dataChannelEncrypted) {
 					try {
-						socket = ssl(socket, socket.getInetAddress()
-								.getHostName(), socket.getPort());
+						socket = ssl(socket, socket.getInetAddress().getHostName(), socket.getPort());
 					} catch (IOException e) {
 						try {
 							socket.close();
@@ -3546,27 +3641,18 @@ public class FTPClient {
 		int b4 = Integer.parseInt(st.nextToken());
 		int p1 = Integer.parseInt(st.nextToken());
 		int p2 = Integer.parseInt(st.nextToken());
-		final InetAddress remoteAddress;
-		// Ignore address?
-		String useSuggestedAddress = System.getProperty(FTPKeys.PASSIVE_DT_USE_SUGGESTED_ADDRESS);
-		if ("true".equalsIgnoreCase(useSuggestedAddress) || "yes".equalsIgnoreCase(useSuggestedAddress)
-				|| "1".equals(useSuggestedAddress)) {
-			remoteAddress = InetAddress.getByAddress(new byte[] { (byte) b1, (byte) b2, (byte) b3, (byte) b4 });
-		} else {
-			remoteAddress = InetAddress.getByName(host);
-		}
-		final int remotePort = (p1 << 8) | p2;
+		final String pasvHost = b1 + "." + b2 + "." + b3 + "." + b4;
+		final int pasvPort = (p1 << 8) | p2;
 		FTPDataTransferConnectionProvider provider = new FTPDataTransferConnectionProvider() {
 
-			public Socket openDataTransferConnection()
-					throws FTPDataTransferException {
+			public Socket openDataTransferConnection() throws FTPDataTransferException {
 				// Establish the connection.
 				Socket dtConnection;
-				String remoteHost = remoteAddress.getHostAddress();
 				try {
-					dtConnection = connector.connectForDataTransferChannel(remoteHost, remotePort);
+					String selectedHost = connector.getUseSuggestedAddressForDataConnections() ? pasvHost : host;
+					dtConnection = connector.connectForDataTransferChannel(selectedHost, pasvPort);
 					if (dataChannelEncrypted) {
-						dtConnection = ssl(dtConnection, remoteHost, remotePort);
+						dtConnection = ssl(dtConnection, selectedHost, pasvPort);
 					}
 				} catch (IOException e) {
 					throw new FTPDataTransferException("Cannot connect to the remote server", e);
@@ -3603,8 +3689,8 @@ public class FTPClient {
 			if (ongoingDataTransfer && !aborted) {
 				if (sendAborCommand) {
 					communication.sendFTPCommand("ABOR");
-					communication.readFTPReply();
 					touchAutoNoopTimer();
+					consumeAborCommandReply = true;
 				}
 				if (dataTransferInputStream != null) {
 					try {

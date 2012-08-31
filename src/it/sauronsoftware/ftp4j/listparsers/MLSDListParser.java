@@ -129,10 +129,14 @@ public class MLSDListParser implements FTPListParser {
 		if (modifyString != null) {
 			modifyString += " +0000";
 			try {
-				modifiedDate = MLSD_DATE_FORMAT_1.parse(modifyString);
+				synchronized (MLSD_DATE_FORMAT_1) {
+					modifiedDate = MLSD_DATE_FORMAT_1.parse(modifyString);
+				}
 			} catch (ParseException e1) {
 				try {
-					modifiedDate = MLSD_DATE_FORMAT_2.parse(modifyString);
+					synchronized (MLSD_DATE_FORMAT_2) {
+						modifiedDate = MLSD_DATE_FORMAT_2.parse(modifyString);
+					}
 				} catch (ParseException e2) {
 					;
 				}

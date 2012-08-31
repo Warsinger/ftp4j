@@ -21,29 +21,27 @@ package it.sauronsoftware.ftp4j.connectors;
 import it.sauronsoftware.ftp4j.FTPConnector;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.Socket;
 
 /**
  * The DirectConnector connects the remote host with a straight socket
  * connection, using no proxy.
  * 
+ * The connector's default value for the
+ * <em>useSuggestedAddressForDataConnections</em> flag is <em>false</em>.
+ * 
  * @author Carlo Pelliccia
  */
-public class DirectConnector implements FTPConnector {
+public class DirectConnector extends FTPConnector {
 
 	public Socket connectForCommunicationChannel(String host, int port)
 			throws IOException {
-		return new Socket(host, port);
+		return tcpConnectForCommunicationChannel(host, port);
 	}
 
 	public Socket connectForDataTransferChannel(String host, int port)
 			throws IOException {
-		Socket socket = new Socket();
-		socket.setReceiveBufferSize(512 * 1024);
-		socket.setSendBufferSize(512 * 1024);
-		socket.connect(new InetSocketAddress(host, port));
-		return socket;
+		return tcpConnectForDataTransferChannel(host, port);
 	}
 
 }

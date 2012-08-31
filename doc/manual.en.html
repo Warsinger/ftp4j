@@ -1,11 +1,11 @@
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
 <html>
 <head>
-<title>ftp4j 1.6 manual</title>
+<title>ftp4j 1.7 manual</title>
 <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
 </head>
 <body>
-<h1>ftp4j 1.6 manual</h1>
+<h1>ftp4j 1.7 manual</h1>
 <ul>
   <li><a href="#1">Requirements</a></li>
   <li><a href="#2">Installation</a></li>
@@ -65,7 +65,7 @@
 <pre>client.disconnect(false);</pre>
 <a name="5"></a>
 <h2>Connecting through a proxy</h2>
-<p>The client connects to the server through a connector (an object implementing the <em>it.sauronsoftware.ftp4j.FTPConnector </em>interface), which returns to the client an already open connection (an object implementing the <em>it.sauronsoftware.ftp4j.FTPConnection</em> interface). That is why ftp4j could support a large set of proxies.</p>
+<p>The client connects to the server through a connector (an object extending <em>it.sauronsoftware.ftp4j.FTPConnector</em>), which returns to the client an already open connection (an object implementing the <em>it.sauronsoftware.ftp4j.FTPConnection</em> interface). That is why ftp4j could support a large set of proxies.</p>
 <p>The connector for a client instance can be setted with the <em>setConnector()</em> method, obviously before connecting the remote server:</p>
 <pre>client.setConnector(anyConnectorYouWant);</pre>
 <p>The default connector, which is used if no other is setted, is <em>DirectConnector</em> (<em>it.sauronsoftware.ftp4j.connectors.DirectConnector</em>), which performs a direct connection to the remote server, without asking the connection to any proxy.</p>
@@ -80,7 +80,7 @@ This one can connect through a FTP proxy, supporting both the SITE and the OPEN 
   <li><em>SOCKS5Connector</em> (<em>it.sauronsoftware.ftp4j.connectors.SOCKS5Connector</em>)<br />
   This one can connect through a SOCKS 5 proxy.</li>
 </ul>
-<p>Since the connector architecture used by ftp4j is a pluggable one, you can always build your own connector implementing the <em>FTPConnector</em> interface.</p>
+<p>Since the connector architecture used by ftp4j is a pluggable one, you can always build your own connector extending the <em>FTPConnector</em> abstract class.</p>
 <a name="6"></a>
 <h2>FTPS/FTPES secured connection</h2>
 <p>The ftp4j library supports both FTPS (FTP over implicit TLS/SSL) and FTPES (FTP over explicit TLS/SSL).</p>
@@ -302,7 +302,7 @@ public class MyTransferListener implements FTPDataTransferListener {
   <li>The server connects the address and the port supplied by the client.</li>
   <li>The data transfer starts in the new established channel.</li>
 </ol>
-<p>The active mode  requires that your client could receive incoming connections from the server. If your client is behind a firewall, a proxy, a gateway or a mix of them, most of the time that is a problem, since it cannot receive incoming connections from outside. Here comes the <em>passive</em> data transfer mode:</p>
+<p>The active mode requires that your client could receive incoming connections from the server. If your client is behind a firewall, a proxy, a gateway or a mix of them, most of the time that is a problem, since it cannot receive incoming connections from outside. Here comes the <em>passive</em> data transfer mode:</p>
 <ol>
   <li>The client asks to the server to prepare a passive data transfer.</li>
   <li>The server replies with its IP address and a port number.</li>
@@ -314,11 +314,14 @@ public class MyTransferListener implements FTPDataTransferListener {
 <pre>client.setPassive(false); // Active mode</pre>
 <pre>client.setPassive(true); // Passive mode</pre>
 <p>The default value for a ftp4j client passive flag is <em>true</em>: if you never call <em>setPassive(false)</em> your client will act ever asking the passive mode to the server before every transfer.</p>
-<p>In the passive transfer mode, the following system property can be set:</p>
+<p>When a passive file transfer is being negotiated, the server supplies an IP address and a port number. The client, as of FTP specifications, should connect to the given host and port.
+In business environments, this behavior could be often problematical, since NAT configurations could prevent literal connections to the given IP address.
+This is the reason why FTP clients usually ignore any IP address returned by the server and connects to the same host used for the communication line. The ftp4j's behavior depends on several factors:</p>
 <ul>
-  <li><p><em>ftp4j.passiveDataTransfer.useSuggestedAddress</em><br />
-  Setting this property value to &quot;true&quot;, &quot;yes&quot; or &quot;1&quot; (case insensitive) causes the client to use the address suggested by the server as a positive reply to a PASV command. To avoid frequently reported NAT problems, infact, ftp4j doesn't trust the IP address declared by the server. The response to the the PASV command is used only for the port information, while the address is replaced with the host name used for the initial connection to the server. By activating this feature the developer can force ftp4j to trust and use the address supplied by the server every time a passive data transfer is being negotiated.</p></li>
-</ul>
+  <li>Every <em>FTPConnector</em> has a default behavior. Most of the bundled ones ignores the IP address returned by the server. At the moment, the only official connector which by default uses the address returned by the server is <em>FTPProxyConnector</em>.</li>
+  <li>The connector's behavior can be globally overriden by defining the system property named <em>ftp4j.passiveDataTransfer.useSuggestedAddress</em>. If it is &quot;true&quot;, &quot;yes&quot; or &quot;1&quot;, any connector will always use the address returned by the server; otherwise, if the system property value is &quot;false&quot;, &quot;no&quot; or &quot;0&quot;, any connector will never use it.</li>
+  <li>Finally, the connector's default behavior and the global setting can be easily overridden in any connector's instance. You can achieve this by retrieving your client's connector and calling its <em>setUseSuggestedAddressForDataConnections()</em> method. This is the finest control you can obtain, since you can choose the behavior in any case and also before any file transfer, if you need to.</li>
+</ul> 
 <p>In the active transfer mode, the following system properties can be set:</p>
 <ul>
   <li><p><em>ftp4j.activeDataTransfer.hostAddress</em><br />
